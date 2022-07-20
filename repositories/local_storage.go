@@ -51,6 +51,36 @@ func (l LocalStorage) Read() ([]models.Pokemon, error) {
 	return pokemons, nil
 }
 
+func parseCSVRecord(record []string) (*models.Pokemon, error) {
+	var pokemon models.Pokemon
+
+	var toConvert = map[string]int{
+		"id":     0,
+		"height": 2,
+		"weight": 3,
+	}
+
+	for key := range toConvert {
+		value, err := strconv.Atoi(record[toConvert[key]])
+		if err != nil {
+			return nil, err
+		}
+		toConvert[key] = value
+	}
+
+	pokemon = models.Pokemon{
+		ID:              toConvert["id"],
+		Name:            record[1],
+		Height:          toConvert["height"],
+		Weight:          toConvert["weight"],
+		Abilities:       nil,
+		FlatAbilityURLs: record[4],
+		EffectEntries:   nil,
+	}
+
+	return &pokemon, nil
+}
+
 func buildRecords(pokemons []models.Pokemon) [][]string {
 	headers := []string{"id", "name", "height", "weight", "flat_abilities"}
 	records := [][]string{headers}
