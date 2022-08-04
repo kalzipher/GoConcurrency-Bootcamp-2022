@@ -2,8 +2,7 @@ package use_cases
 
 import (
 	"GoConcurrency-Bootcamp-2022/models"
-	"fmt"
-	"sort"
+	"log"
 	"strings"
 	"sync"
 )
@@ -21,46 +20,64 @@ type Fetcher struct {
 	storage writer
 }
 
+type ResultPokemon struct {
+	Pokemon models.Pokemon
+	Err     error
+}
+
 func NewFetcher(api api, storage writer) Fetcher {
 	return Fetcher{api, storage}
 }
 
-func (f Fetcher) Fetch(from, to int) error {
-	var totalWorkers = to - from
-	fmt.Println(totalWorkers)
-	var pokemons []models.Pokemon
-	var pokemonChannels = make(chan models.Pokemon, totalWorkers)
-	var wg sync.WaitGroup
+func (fetcher Fetcher) Fetch(from, to int) error {
+	var listPokemon []models.Pokemon
+	var finish = make(chan bool, 1)
+	defer close(finish)
+	chResponse := GeneratorResponsePokemon(from, to, fetcher, finish)
 	for id := from; id <= to; id++ {
-		go func(index int) {
-			wg.Add(1)
-			pokemon, err := f.api.FetchPokemon(index)
-			if err != nil {
-				return
-			}
-
-			var flatAbilities []string
-			for _, t := range pokemon.Abilities {
-				flatAbilities = append(flatAbilities, t.Ability.URL)
-			}
-			pokemon.FlatAbilityURLs = strings.Join(flatAbilities, "|")
-			pokemonChannels <- pokemon
-		}(id)
-	}
-
-	go func(pokeChannel chan models.Pokemon) {
-		defer close(pokeChannel)
-		for pokemon := range pokeChannel {
-			wg.Done()
-			pokemons = append(pokemons, pokemon)
+		pokemonResponse := <-chResponse
+		if pokemonResponse.Err != nil {
+			finish <- true
+			continue
 		}
-	}(pokemonChannels)
+		listPokemon = append(listPokemon, pokemonResponse.Pokemon)
+	}
+	return fetcher.storage.Write(listPokemon)
+}
 
-	wg.Wait()
+func GeneratorResponsePokemon(from, to int, fetcher Fetcher, abort <-chan bool) <-chan ResultPokemon {
+	response := make(chan ResultPokemon)
+	wg := sync.WaitGroup{}
+	go func() {
+		wg.Wait()
+		close(response)
+	}()
 
-	sort.Slice(pokemons, func(i, j int) bool {
-		return pokemons[i].ID < pokemons[j].ID
-	})
+	for i := from; i <= to; i++ {
+		wg.Add(1)
+		go FetchPokemonById(wg, i, fetcher, response, abort)
+	}
+	return response
+}
 
-	return f.storage.Write(pokemons)
+func FetchPokemonById(wg sync.WaitGroup, idPokemon int, fetcher Fetcher, response chan<- ResultPokemon, abort <-chan bool) {
+	defer wg.Done()
+	pokemon, err := fetcher.api.FetchPokemon(idPokemon)
+	if err != nil {
+		var flatAbilities []string
+		for _, itemAbility := range pokemon.Abilities {
+			flatAbilities = append(flatAbilities, itemAbility.Ability.URL)
+		}
+		pokemon.FlatAbilityURLs = strings.Join(flatAbilities, "|")
+	}
+	responsePokemon := ResultPokemon{
+		pokemon,
+		err,
+	}
+	select {
+	case <-abort:
+		log.Println("Abort!!!")
+		return
+	case response <- responsePokemon:
+	}
 }
