@@ -1,9 +1,10 @@
 package use_cases
 
 import (
-	"strings"
-
 	"GoConcurrency-Bootcamp-2022/models"
+	"log"
+	"strings"
+	"sync"
 )
 
 type api interface {
@@ -19,26 +20,64 @@ type Fetcher struct {
 	storage writer
 }
 
+type ResultPokemon struct {
+	Pokemon models.Pokemon
+	Err     error
+}
+
 func NewFetcher(api api, storage writer) Fetcher {
 	return Fetcher{api, storage}
 }
 
-func (f Fetcher) Fetch(from, to int) error {
-	var pokemons []models.Pokemon
+func (fetcher Fetcher) Fetch(from, to int) error {
+	var listPokemon []models.Pokemon
+	var finish = make(chan bool, 1)
+	defer close(finish)
+	chResponse := GeneratorResponsePokemon(from, to, fetcher, finish)
 	for id := from; id <= to; id++ {
-		pokemon, err := f.api.FetchPokemon(id)
-		if err != nil {
-			return err
+		pokemonResponse := <-chResponse
+		if pokemonResponse.Err != nil {
+			finish <- true
+			continue
 		}
+		listPokemon = append(listPokemon, pokemonResponse.Pokemon)
+	}
+	return fetcher.storage.Write(listPokemon)
+}
 
+func GeneratorResponsePokemon(from, to int, fetcher Fetcher, abort <-chan bool) <-chan ResultPokemon {
+	response := make(chan ResultPokemon)
+	wg := sync.WaitGroup{}
+	go func() {
+		wg.Wait()
+		close(response)
+	}()
+
+	for i := from; i <= to; i++ {
+		wg.Add(1)
+		go FetchPokemonById(wg, i, fetcher, response, abort)
+	}
+	return response
+}
+
+func FetchPokemonById(wg sync.WaitGroup, idPokemon int, fetcher Fetcher, response chan<- ResultPokemon, abort <-chan bool) {
+	defer wg.Done()
+	pokemon, err := fetcher.api.FetchPokemon(idPokemon)
+	if err != nil {
 		var flatAbilities []string
-		for _, t := range pokemon.Abilities {
-			flatAbilities = append(flatAbilities, t.Ability.URL)
+		for _, itemAbility := range pokemon.Abilities {
+			flatAbilities = append(flatAbilities, itemAbility.Ability.URL)
 		}
 		pokemon.FlatAbilityURLs = strings.Join(flatAbilities, "|")
-
-		pokemons = append(pokemons, pokemon)
 	}
-
-	return f.storage.Write(pokemons)
+	responsePokemon := ResultPokemon{
+		pokemon,
+		err,
+	}
+	select {
+	case <-abort:
+		log.Println("Abort!!!")
+		return
+	case response <- responsePokemon:
+	}
 }
